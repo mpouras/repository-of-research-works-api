@@ -1,0 +1,26 @@
+<?php
+
+namespace App\Models;
+
+use App\Helpers\Paginatable;
+use App\Helpers\Sortable;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+
+class Author extends Model
+{
+    use HasFactory, Sortable, Paginatable;
+
+    protected $fillable = [
+        'name',
+        'university',
+        'profile_link',
+        'orcid_link',
+    ];
+
+    public function articles(): BelongsToMany
+    {
+        return $this->belongsToMany(Article::class, 'article_author')->withTimestamps();
+    }
+}
