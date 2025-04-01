@@ -25,7 +25,6 @@ class UniquePublicationPerPublisher implements ValidationRule
     {
         $title = $value;
 
-        // Check for duplicates of the title with any publisher in the list
         $exists = Publication::where('title', $title)
             ->whereHas('publishers', fn($query) => $query->whereIn('name', $this->publishers))
             ->exists();

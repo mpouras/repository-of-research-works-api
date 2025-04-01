@@ -64,9 +64,6 @@ Route::controller(ScraperController::class)->group(function () {
        Route::get('/publications/{scraper}', 'indexPublications')->name('scraper.publications.index');
        Route::post('/publications', 'storeManyPublications')->name('scraper.publications.store');
        Route::put('/publications', 'updateManyPublications')->name('scraper.publications.store');
-       Route::post('/publications/{publicationId}/volumes-issues', 'storeVolumesAndIssuesOfPublication')->name('scraper.volumesAndIssues.store');
-       Route::post('/publications/{publicationId}/volumes', 'storeManyVolumes')->name('scraper.volumes.store');
-       Route::post('/publications/{publicationId}/{volumeNumber}/issues', 'storeManyIssues')->name('scraper.issues.store');
        Route::post('/publications/{publicationId}/{volumeNumber}/{issueName}/articles', 'storeManyArticles')->name('scraper.articles.store');
    });
 });

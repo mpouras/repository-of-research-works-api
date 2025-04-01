@@ -6,7 +6,7 @@ use App\Models\Issue;
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 
-class UniqueIssueNumberPerVolume implements ValidationRule
+class UniqueIssueNamePerVolume implements ValidationRule
 {
     protected int $volumeId;
 

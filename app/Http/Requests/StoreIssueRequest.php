@@ -4,7 +4,7 @@ namespace App\Http\Requests;
 
 
 use App\Helpers\EntitiesFind;
-use App\Rules\UniqueIssueNumberPerVolume;
+use App\Rules\UniqueIssueNamePerVolume;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreIssueRequest extends FormRequest
@@ -34,7 +34,7 @@ class StoreIssueRequest extends FormRequest
             'name' => [
                 'required',
                 'string',
-                new UniqueIssueNumberPerVolume($volumeId),
+                new UniqueIssueNamePerVolume($volumeId),
             ],
             'month_published' => 'required|integer|between:1,12',
         ];

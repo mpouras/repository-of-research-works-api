@@ -26,12 +26,12 @@ class StoreManyPublicationsRequest extends FormRequest
      */
     public function rules(): array
     {
-        $publishers = collect($this->all())->pluck('publishers')->flatten()->unique()->toArray();
+        $publishers = collect($this->input())->pluck('publishers')->flatten(1)->pluck('name')->toArray();
 
         return [
             'publishers' => 'required|array',
-            'publishers.*' => 'required|string',
-            'scraper' => 'required|in:mdpi,acm,ieee,springer',
+            'publishers.*.name' => 'required|string',
+            'publishers.*.scraper' => 'required|in:mdpi,acm,ieee,springer',
             'type' => 'required|in:Journal,Magazine,Book',
             'title' => [
                 'required',

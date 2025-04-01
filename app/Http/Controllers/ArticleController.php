@@ -53,7 +53,7 @@ class ArticleController extends Controller implements HasMiddleware
         $authors = $articleData['authors'] ?? [];
         $keywords = $articleData['keywords'] ?? [];
 
-        $article = Article::create($articleData);
+        $article = $issue->articles()->create($articleData);
 
         event(new ArticleAuthorsEvent($article, $authors, 'attach'));
         event(new ArticleKeywordsEvent($article, $keywords, 'attach'));

@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\ArticleAuthorsEvent;
+use App\Events\ArticleKeywordsEvent;
+use App\Events\PublicationPublishersEvent;
 use App\Helpers\EntitiesFind;
 use App\Http\Requests\Scraper\StoreManyArticlesRequest;
 use App\Http\Requests\Scraper\StoreManyIssuesRequest;
@@ -15,10 +18,15 @@ use App\Models\Issue;
 use App\Models\Publication;
 use App\Models\Publisher;
 use App\Models\Volume;
+use App\Rules\MinimumVolumePublishedYear;
+use App\Rules\SequentialVolumeNumber;
+use App\Rules\UniqueArticlePerIssue;
+use App\Rules\UniqueIssueNamePerVolume;
 use App\Rules\UniquePublicationPerPublisher;
 use Carbon\Carbon;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
 class ScraperController extends Controller implements HasMiddleware
@@ -42,16 +50,22 @@ class ScraperController extends Controller implements HasMiddleware
             return true;
         }
 
-        $validator = Validator::make(
-            ['title' => $title],
-            [
-                'title' => [
-                    'required',
-                    'string',
-                    new UniquePublicationPerPublisher($publishers),
-                ],
-            ]
-        );
+        foreach ($publishers as $publisher) {
+            $validator = Validator::make(
+                ['title' => $title],
+                [
+                    'title' => [
+                        'required',
+                        'string',
+                        new UniquePublicationPerPublisher($publisher),
+                    ],
+                ]
+            );
+
+            if ($validator->fails()) {
+                return true;
+            }
+        }
 
         if ($validator->fails()) {
             return true;
@@ -66,6 +80,72 @@ class ScraperController extends Controller implements HasMiddleware
         $month = str_pad($month_published, 2, '0', STR_PAD_LEFT);
 
         return "{$month}-{$year_published}";
+    }
+
+    private function processVolume($publication, array $volumeData)
+    {
+        $volume = $publication->volumes()->where('number', $volumeData['number'])->first();
+
+        if (!$volume) {
+            $validator = Validator::make($volumeData, [
+                'number' => new SequentialVolumeNumber($publication),
+                'year_published' => new MinimumVolumePublishedYear($publication),
+            ]);
+
+            if ($validator->fails()) {
+                return ['skipped' => $volumeData['number'], 'volume' => null];
+            }
+
+            $volume = $publication->volumes()->create($volumeData);
+        }
+
+        return ['skipped' => null, 'volume' => $volume];
+    }
+
+    private function processIssue($volume, array $issueData)
+    {
+        $issue = $volume->issues()->where('name', $issueData['name'])->first();
+
+        if (!$issue) {
+            $validator = Validator::make($issueData, [
+                'name' => new UniqueIssueNamePerVolume($volume->id)
+            ]);
+
+            if ($validator->fails()) {
+                return ['skipped' => $issueData['name'], 'issue' => null];
+            }
+
+            $issue = $volume->issues()->create($issueData);
+        }
+
+        return ['skipped' => null, 'issue' => $issue];
+    }
+
+    private function processArticle($issue, array $articleData)
+    {
+        $validator = Validator::make($articleData, [
+            'title' => new UniqueArticlePerIssue($issue->id)
+        ]);
+
+        if ($validator->fails()) {
+            return ['skipped' => $articleData['title'], 'article' => null];
+        }
+
+        if (!empty($articleData['published_date'])) {
+            $articleData['published_date'] = Carbon::createFromFormat('d-m-Y', $articleData['published_date'])->format('Y-m-d');
+        } else {
+            $articleData['published_date'] = null;
+        }
+
+        $authors = $articleData['authors'] ?? [];
+        $keywords = $articleData['keywords'] ?? [];
+
+        $article = $issue->articles()->create($articleData);
+
+        event(new ArticleAuthorsEvent($article, $authors, 'attach'));
+        event(new ArticleKeywordsEvent($article, $keywords, 'attach'));
+
+        return ['skipped' => null, 'article' => $article];
     }
 
     public function indexPublications($scraper)
@@ -94,7 +174,8 @@ class ScraperController extends Controller implements HasMiddleware
             }
 
             $publication = Publication::create($publicationData);
-            $publication->attachPublishers($publicationData['publishers'], $publicationData['scraper']);
+
+            event(new PublicationPublishersEvent($publication, $publicationData['publishers'], 'attach'));
 
             $storedPublications[] = $publication->title;
         }
@@ -114,126 +195,60 @@ class ScraperController extends Controller implements HasMiddleware
         $validPublications = $request->validPublications();
         $skippedPublications = $request->skippedPublications();
         $updatedPublications = [];
+        $skippedVolumes = [];
+        $skippedIssues = [];
+        $skippedArticles = [];
 
         foreach ($validPublications as $publicationData) {
             $publication = $this->publication($publicationData['id']);
             $publication->update($publicationData);
 
             if (isset($publicationData['publishers'])) {
-                $publication->attachPublishers($publicationData['publishers'], $publicationData['scraper']);
+                event(new PublicationPublishersEvent($publication, $publicationData['publishers'], 'attach'));
+            }
+
+            if (isset($publicationData['volumes'])) {
+                foreach ($publicationData['volumes'] as $volumeData) {
+                    $volumeData['publication_id'] = $publication->id;
+                    $volumeResult = $this->processVolume($publication, $volumeData);
+
+                    if ($volumeResult['skipped']) {
+                        $skippedVolumes[] = $volumeResult['skipped'];
+                    }
+
+                    if ($volumeResult['volume'] && isset($volumeData['issues'])) {
+                        foreach ($volumeData['issues'] as $issueData) {
+                            $issueResult = $this->processIssue($volumeResult['volume'], $issueData);
+
+                            if ($issueResult['skipped']) {
+                                $skippedIssues[] = $issueResult['skipped'];
+                            }
+
+                            if ($issueResult['issue'] && isset($issueData['articles'])) {
+                                foreach ($issueData['articles'] as $articleData) {
+                                    $articleResult = $this->processArticle($issueResult['issue'], $articleData);
+
+                                    if ($articleResult['skipped']) {
+                                        $skippedArticles[] = $articleResult['skipped'];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             $updatedPublications[] = $publication->title;
         }
 
-        $response = ['message' => 'Multiple publications update'];
-        if(!empty($skippedPublications)) {
-            $response['skipped_publications'] = $skippedPublications;
-        }
-        if (!empty($updatedPublications)) {
-            $response['updated_publications'] = $updatedPublications;
-        }
-        return response()->json($response, 201);
-    }
-
-    public function storeVolumesAndIssuesOfPublication(StoreManyVolumesIssuesRequest $request, $publicationId)
-    {
-        $this->publication($publicationId);
-
-        $validVolumes = $request->validVolumes();
-        $skippedVolumes = $request->skippedVolumes();
-
-        $createdVolumes = [];
-        $skippedIssues = [];
-
-        foreach ($validVolumes as $volumeData) {
-            $volumeData['publication_id'] = $publicationId;
-            $volume = Volume::create($volumeData);
-
-            $volumeWithIssues = [
-                'number' => $volume->number,
-                'year_published' => $volume->year_published,
-                'issues' => []
-            ];
-
-            foreach ($volumeData['issues'] as $issueData) {
-                $formattedMonthPublished = $this->monthPublished($issueData['month_published'], $volume->year_published);
-                $issueData['month_published'] = $formattedMonthPublished;
-                $issueData['volume_id'] = $volume->id;
-
-                $issue = Issue::create($issueData);
-                $volumeWithIssues['issues'][] = [
-                    'name' => $issue->name,
-                    'month_published' => $issue->month_published
-                ];
-            }
-            $createdVolumes[] = $volumeWithIssues;
-        }
-
-        $response = ['message' => 'Multiple volumes and issues store'];
-        if (!empty($skippedVolumes)) {
-            $response['skipped_volumes'] = $skippedVolumes;
-        }
-
-        if (!empty($createdVolumes)) {
-            $response['created_volumes'] = $createdVolumes;
-        }
-
-        if (!empty($skippedIssues)) {
-            $response['skipped_issues'] = $skippedIssues;
-        }
-        return response()->json($response, 201);
-    }
-
-    public function storeManyVolumes(StoreManyVolumesRequest $request, $publicationId)
-    {
-        $this->publication($publicationId);
-
-        $validVolumes = $request->validVolumes();
-        $skippedVolumes = $request->skippedVolumes();
-
-        $createdVolumes = [];
-        foreach ($validVolumes as $volumeData) {
-            $volumeData['publication_id'] = $publicationId;
-            $volume = Volume::create($volumeData);
-            $createdVolumes[] = $volume['number'];
-        }
-
-        $response = ['message' => 'Multiple volumes store'];
-        if(!empty($skippedVolumes)) {
-            $response['skipped_volumes'] = $skippedVolumes;
-        }
-        if (!empty($createdVolumes)) {
-            $response['created_volumes'] = $createdVolumes;
-        }
-        return response()->json($response, 201);
-    }
-
-    public function storeManyIssues(StoreManyIssuesRequest $request, $publicationId, $volumeNumber)
-    {
-        $volume = $this->volume($publicationId, $volumeNumber);
-
-        $validIssues = $request->validIssues();
-        $skippedIssues = $request->skippedIssues();
-
-        $createdIssues = [];
-        foreach ($validIssues as $issueData) {
-            $formattedMonthPublished = $this->monthPublished($issueData['month_published'], $volume->year_published);
-            $issueData['month_published'] = $formattedMonthPublished;
-            $issueData['volume_id'] = $volume->id;
-
-            $issue = Issue::create($issueData);
-            $createdIssues[] = $issue;
-        }
-
-        $response = ['message' => 'Multiple issues store'];
-        if(!empty($skippedIssues)) {
-            $response['skippedIssues'] = $skippedIssues;
-        }
-        if (!empty($createdIssues)) {
-            $response['createdIssues'] = $createdIssues;
-        }
-        return response()->json($response, 201);
+        return response()->json([
+            'message' => 'Multiple publications update',
+            'skipped_publications' => $skippedPublications,
+            'updated_publications' => $updatedPublications,
+            'skipped_volumes' => $skippedVolumes,
+            'skipped_issues' => $skippedIssues,
+            'skipped_articles' => $skippedArticles,
+        ], 201);
     }
 
     public function storeManyArticles(StoreManyArticlesRequest $request, $publicationId, $volumeNumber, $issueName)
@@ -252,8 +267,13 @@ class ScraperController extends Controller implements HasMiddleware
             }
             $articleData['issue_id'] = $issue->id;
 
+            $authors = $articleData['authors'] ?? [];
+            $keywords = $articleData['keywords'] ?? [];
+
             $article = Article::create($articleData);
-            $article->attachAuthorsAndKeywords($articleData);
+
+            event(new ArticleAuthorsEvent($article, $authors, 'attach'));
+            event(new ArticleKeywordsEvent($article, $keywords, 'attach'));
 
             $createdArticles[] = $article->title;
         }

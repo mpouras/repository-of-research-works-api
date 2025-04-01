@@ -17,7 +17,7 @@ trait ValidatesManyPublicationsTrait
             $validator = Validator::make($publication, $rules);
 
             if ($validator->fails()) {
-                $this->skippedPublications[] = $publication['title'];
+                $this->skippedPublications[] = $publication['title'] ?? $publication['id'];
             } else {
                 $this->validPublications[] = $publication;
             }
