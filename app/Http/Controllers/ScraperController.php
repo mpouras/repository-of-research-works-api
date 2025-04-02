@@ -26,6 +26,7 @@ use App\Rules\UniquePublicationPerPublisher;
 use Carbon\Carbon;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
@@ -162,129 +163,173 @@ class ScraperController extends Controller implements HasMiddleware
 
     public function storeManyPublications(StoreManyPublicationsRequest $request)
     {
-        $validPublications = $request->validPublications();
-        $skippedPublications = $request->skippedPublications();
+        DB::beginTransaction();
 
-        $storedPublications = [];
-        $processedTitles = [];
+        try {
+            $validPublications = $request->validPublications();
+            $skippedPublications = $request->skippedPublications();
 
-        foreach ($validPublications as $publicationData) {
-            if ($this->skipDuplicate($publicationData, $processedTitles)) {
-                continue;
+            $storedPublications = [];
+            $processedTitles = [];
+
+            foreach ($validPublications as $publicationData) {
+                if ($this->skipDuplicate($publicationData, $processedTitles)) {
+                    continue;
+                }
+
+                $publication = Publication::create($publicationData);
+
+                event(new PublicationPublishersEvent($publication, $publicationData['publishers'], 'attach'));
+
+                $storedPublications[] = $publication->title;
             }
 
-            $publication = Publication::create($publicationData);
+            $response = ['message' => 'Multiple publications store'];
+            if (!empty($skippedPublications)) {
+                $response['skipped_publications'] = $skippedPublications;
+            }
+            if (!empty($storedPublications)) {
+                $response['created_publications'] = $storedPublications;
+            }
 
-            event(new PublicationPublishersEvent($publication, $publicationData['publishers'], 'attach'));
+            DB::commit();
 
-            $storedPublications[] = $publication->title;
+            return response()->json($response, 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Error storing publications', 'error' => $e->getMessage()], 500);
         }
-
-        $response = ['message' => 'Multiple publications store'];
-        if(!empty($skippedPublications)) {
-            $response['skipped_publications'] = $skippedPublications;
-        }
-        if (!empty($storedPublications)) {
-            $response['created_publications'] = $storedPublications;
-        }
-        return response()->json($response, 201);
     }
 
     public function updateManyPublications(UpdateManyPublicationsRequest $request)
     {
-        $validPublications = $request->validPublications();
-        $skippedPublications = $request->skippedPublications();
-        $updatedPublications = [];
-        $skippedVolumes = [];
-        $skippedIssues = [];
-        $skippedArticles = [];
+        DB::beginTransaction();
 
-        foreach ($validPublications as $publicationData) {
-            $publication = $this->publication($publicationData['id']);
-            $publication->update($publicationData);
+        try {
+            $validPublications = $request->validPublications();
+            $skippedPublications = $request->skippedPublications();
+            $updatedPublications = [];
 
-            if (isset($publicationData['publishers'])) {
-                event(new PublicationPublishersEvent($publication, $publicationData['publishers'], 'attach'));
-            }
+            foreach ($validPublications as $publicationData) {
+                $publication = $this->publication($publicationData['id']);
+                $publication->update($publicationData);
 
-            if (isset($publicationData['volumes'])) {
-                foreach ($publicationData['volumes'] as $volumeData) {
-                    $volumeData['publication_id'] = $publication->id;
-                    $volumeResult = $this->processVolume($publication, $volumeData);
+                $publicationDetails = [
+                    'publication' => [
+                        'id' => $publication->id,
+                        'title' => $publication->title,
+                    ],
+                    'publishers' => [],
+                ];
 
-                    if ($volumeResult['skipped']) {
-                        $skippedVolumes[] = $volumeResult['skipped'];
-                    }
+                if (isset($publicationData['publishers'])) {
 
-                    if ($volumeResult['volume'] && isset($volumeData['issues'])) {
-                        foreach ($volumeData['issues'] as $issueData) {
-                            $issueResult = $this->processIssue($volumeResult['volume'], $issueData);
+                    event(new PublicationPublishersEvent($publication, $publicationData['publishers'], 'attach'));
 
-                            if ($issueResult['skipped']) {
-                                $skippedIssues[] = $issueResult['skipped'];
-                            }
+                    $publicationDetails['publishers'] = collect($publicationData['publishers'])->pluck('name')->toArray();
+                }
 
-                            if ($issueResult['issue'] && isset($issueData['articles'])) {
-                                foreach ($issueData['articles'] as $articleData) {
-                                    $articleResult = $this->processArticle($issueResult['issue'], $articleData);
+                if (isset($publicationData['volumes'])) {
+                    foreach ($publicationData['volumes'] as $volumeData) {
+                        $volumeData['publication_id'] = $publication->id;
+                        $volumeResult = $this->processVolume($publication, $volumeData);
 
-                                    if ($articleResult['skipped']) {
-                                        $skippedArticles[] = $articleResult['skipped'];
+                        if ($volumeResult['volume'] && isset($volumeData['issues'])) {
+                            $volumeDetails = [
+                                'number' => $volumeResult['volume']->number,
+                                'issues' => []
+                            ];
+
+                            foreach ($volumeData['issues'] as $issueData) {
+                                $issueResult = $this->processIssue($volumeResult['volume'], $issueData);
+
+
+                                if ($issueResult['issue'] && isset($issueData['articles'])) {
+                                    $issueDetails = [
+                                        'name' => $issueResult['issue']->name,
+                                        'articles' => []
+                                    ];
+
+                                    foreach ($issueData['articles'] as $articleData) {
+                                        $articleResult = $this->processArticle($issueResult['issue'], $articleData);
+
+
+                                        if ($articleResult['article']) {
+                                            $issueDetails['articles'][] = [
+                                                'title' => $articleResult['article']->title,
+                                                'link' => $articleResult['article']->link
+                                            ];
+                                        }
                                     }
+
+                                    $volumeDetails['issues'][] = $issueDetails;
                                 }
                             }
+
+                            $publicationDetails['volumes'][] = $volumeDetails;
                         }
                     }
                 }
+
+                $updatedPublications[] = $publicationDetails;
             }
 
-            $updatedPublications[] = $publication->title;
-        }
+            DB::commit();
 
-        return response()->json([
-            'message' => 'Multiple publications update',
-            'skipped_publications' => $skippedPublications,
-            'updated_publications' => $updatedPublications,
-            'skipped_volumes' => $skippedVolumes,
-            'skipped_issues' => $skippedIssues,
-            'skipped_articles' => $skippedArticles,
-        ], 201);
+            return response()->json([
+                'message' => 'Multiple publications update',
+                'skipped_publications' => $skippedPublications,
+                'updated_publications' => $updatedPublications,
+            ], 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Error updating publications', 'error' => $e->getMessage()], 500);
+        }
     }
 
     public function storeManyArticles(StoreManyArticlesRequest $request, $publicationId, $volumeNumber, $issueName)
     {
         $issue = $this->issue($publicationId, $volumeNumber, $issueName);
 
-        $validArticles = $request->validArticles();
-        $skippedArticles = $request->skippedArticles();
+        DB::beginTransaction();
 
-        $createdArticles = [];
-        foreach ($validArticles as $articleData) {
-            if (!empty($articleData['published_date'])) {
-                $articleData['published_date'] = Carbon::createFromFormat('d-m-Y', $articleData['published_date'])->format('Y-m-d');
-            } else {
-                $articleData['published_date'] = null;
+        try {
+            $validArticles = $request->validArticles();
+            $skippedArticles = $request->skippedArticles();
+
+            $createdArticles = [];
+            foreach ($validArticles as $articleData) {
+                if (!empty($articleData['published_date'])) {
+                    $articleData['published_date'] = Carbon::createFromFormat('d-m-Y', $articleData['published_date'])->format('Y-m-d');
+                } else {
+                    $articleData['published_date'] = null;
+                }
+                $articleData['issue_id'] = $issue->id;
+
+                $authors = $articleData['authors'] ?? [];
+                $keywords = $articleData['keywords'] ?? [];
+
+                $article = Article::create($articleData);
+
+                event(new ArticleAuthorsEvent($article, $authors, 'attach'));
+                event(new ArticleKeywordsEvent($article, $keywords, 'attach'));
+
+                $createdArticles[] = $article->title;
             }
-            $articleData['issue_id'] = $issue->id;
 
-            $authors = $articleData['authors'] ?? [];
-            $keywords = $articleData['keywords'] ?? [];
+            DB::commit();
 
-            $article = Article::create($articleData);
-
-            event(new ArticleAuthorsEvent($article, $authors, 'attach'));
-            event(new ArticleKeywordsEvent($article, $keywords, 'attach'));
-
-            $createdArticles[] = $article->title;
+            $response = ['message' => 'Multiple articles store'];
+            if (!empty($skippedArticles)) {
+                $response['skipped_articles'] = $skippedArticles;
+            }
+            if (!empty($createdArticles)) {
+                $response['created_articles'] = $createdArticles;
+            }
+            return response()->json($response, 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Error storing articles', 'error' => $e->getMessage()], 500);
         }
-
-        $response = ['message' => 'Multiple articles store'];
-        if(!empty($skippedArticles)) {
-            $response['skipped_articles'] = $skippedArticles;
-        }
-        if (!empty($createdArticles)) {
-            $response['created_articles'] = $createdArticles;
-        }
-        return response()->json($response, 201);
     }
 }

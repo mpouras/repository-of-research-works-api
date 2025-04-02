@@ -48,7 +48,7 @@ class StoreManyArticlesRequest extends FormRequest
             'authors.*.profile_link' => 'required|url',
             'authors.*.orcid_link' => 'nullable|url',
             'keywords' => 'nullable|array',
-            'keywords.*' => 'required|string',
+            'keywords.*.name' => 'required|string',
         ];
     }
 }
