@@ -13,6 +13,7 @@ use App\Http\Requests\Scraper\StoreManyVolumesIssuesRequest;
 use App\Http\Requests\Scraper\StoreManyVolumesRequest;
 use App\Http\Requests\Scraper\UpdateManyPublicationsRequest;
 use App\Http\Resources\ScraperPublicationsResource;
+use App\Http\Resources\ScraperRecentResource;
 use App\Models\Article;
 use App\Models\Issue;
 use App\Models\Publication;
@@ -159,6 +160,38 @@ class ScraperController extends Controller implements HasMiddleware
             ->unique('id');
 
         return response()->json(ScraperPublicationsResource::collection($publications));
+    }
+
+    public function indexRecent($scraper)
+    {
+        $publications = Publication::whereHas('publishers', function ($query) use ($scraper) {
+            $query->where('scraper', $scraper);
+        })->get();
+
+        foreach ($publications as $publication) {
+            $recentVolume = $publication->volumes()
+                ->orderBy('number', 'desc')
+                ->first();
+
+            $publication->recent_volume = $recentVolume;
+            if ($recentVolume) {
+                $recentIssue = $recentVolume->issues()
+                    ->orderByRaw('CAST(month_published AS UNSIGNED) DESC')
+                    ->first();
+
+                $publication->recent_volume->recent_issue = $recentIssue;
+
+                if ($recentIssue) {
+                    $recentArticle = $recentIssue->articles()
+                        ->orderBy('link', 'desc')
+                        ->first();
+
+                    $publication->recent_volume->recent_issue->recent_article = $recentArticle;
+                }
+            }
+        }
+
+        return response()->json(ScraperRecentResource::collection($publications));
     }
 
     public function storeManyPublications(StoreManyPublicationsRequest $request)
