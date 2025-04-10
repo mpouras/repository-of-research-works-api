@@ -7,18 +7,13 @@ use App\Events\ArticleKeywordsEvent;
 use App\Events\PublicationPublishersEvent;
 use App\Helpers\EntitiesFind;
 use App\Http\Requests\Scraper\StoreManyArticlesRequest;
-use App\Http\Requests\Scraper\StoreManyIssuesRequest;
 use App\Http\Requests\Scraper\StoreManyPublicationsRequest;
-use App\Http\Requests\Scraper\StoreManyVolumesIssuesRequest;
-use App\Http\Requests\Scraper\StoreManyVolumesRequest;
 use App\Http\Requests\Scraper\UpdateManyPublicationsRequest;
 use App\Http\Resources\ScraperPublicationsResource;
 use App\Http\Resources\ScraperRecentResource;
 use App\Models\Article;
-use App\Models\Issue;
 use App\Models\Publication;
 use App\Models\Publisher;
-use App\Models\Volume;
 use App\Rules\MinimumVolumePublishedYear;
 use App\Rules\SequentialVolumeNumber;
 use App\Rules\UniqueArticlePerIssue;
@@ -362,6 +357,15 @@ class ScraperController extends Controller implements HasMiddleware
             return response()->json($response, 201);
         } catch (\Exception $e) {
             DB::rollBack();
+
+            Log::error('Error storing articles', [
+                'error' => $e->getMessage(),
+                'publication_id' => $publicationId,
+                'volume_number' => $volumeNumber,
+                'issue_name' => $issueName,
+                'stack_trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json(['message' => 'Error storing articles', 'error' => $e->getMessage()], 500);
         }
     }
