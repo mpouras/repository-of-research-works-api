@@ -19,8 +19,14 @@ class ArticleKeywordsListener
     private function attachKeyword(ArticleKeywordsEvent $event)
     {
         foreach ($event->keywords as $keywordData) {
+            $keywordName = $keywordData['name'] ?? '';
+
+            if (mb_strlen($keywordName) > 255) {
+                continue;
+            }
+
             $keyword = Keyword::firstOrCreate([
-                'name' => $keywordData['name'],
+                'name' => $keywordName,
             ]);
 
             if (!$event->article->keywords()->where('keyword_id', $keyword->id)->exists()) {

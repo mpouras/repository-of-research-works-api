@@ -26,6 +26,11 @@ class ScraperRecentResource extends JsonResource
             'recent_issue' => $this->recent_volume?->recent_issue ? [
                 'name' => $this->recent_volume->recent_issue->name,
                 'month_published' => $this->recent_volume->recent_issue->month_published,
+                'articles' => collect($this->recent_volume->recent_issue->recent_articles)->map(function ($article) {
+                    return [
+                        'link' => $article->link,
+                    ];
+                }),
             ] : null,
             'recent_article' => $this->recent_volume->recent_issue->recent_article->link ?? null,
         ];

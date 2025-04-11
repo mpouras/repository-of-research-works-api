@@ -177,6 +177,10 @@ class ScraperController extends Controller implements HasMiddleware
                 $publication->recent_volume->recent_issue = $recentIssue;
 
                 if ($recentIssue) {
+                    $recentArticles = $recentIssue->articles;
+
+                    $publication->recent_volume->recent_issue->recent_articles = $recentArticles;
+
                     $recentArticle = $recentIssue->articles()
                         ->orderBy('link', 'desc')
                         ->first();
